@@ -40,23 +40,31 @@ def count_samples(student_id, name):
 
 
 def save_face_sample(student_id, name, frame_bgr):
-    """Save one enrollment photo IF exactly one clear face is present.
+    """Save one enrollment photo if a single, large, sharp face is present.
 
-    Returns the saved Path, or None when no face was found.
+    Returns (saved_path_or_None, reason_message).
     """
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     boxes = face_recognition.face_locations(rgb, model=config.FACE_DETECTION_MODEL)
     if not boxes:
-        return None
-    # keep the largest face (the person closest to the camera)
-    top, right, bottom, left = max(boxes, key=lambda b: (b[2] - b[0]) * (b[1] - b[3]))
+        return None, "No face detected - face the camera."
+    if len(boxes) > 1:
+        return None, "More than one face in view."
+
+    top, right, bottom, left = boxes[0]
+    face_h = bottom - top
+    if face_h < config.MIN_FACE_PIXELS:
+        return None, "Move closer - your face is too small."
+
+    # Laplacian variance is a cheap blur metric; low = blurry.
+    crop = cv2.cvtColor(frame_bgr[top:bottom, left:right], cv2.COLOR_BGR2GRAY)
+    if cv2.Laplacian(crop, cv2.CV_64F).var() < config.MIN_SHARPNESS:
+        return None, "Too blurry - hold still."
+
     d = student_dataset_dir(student_id, name)
-    idx = count_samples(student_id, name)
-    path = d / f"{idx:03d}.jpg"
-    # store the full frame (not just the crop) so re-training can re-detect with
-    # whatever model/settings are configured later.
-    cv2.imwrite(str(path), frame_bgr)
-    return path
+    path = d / f"{count_samples(student_id, name):03d}.jpg"
+    cv2.imwrite(str(path), frame_bgr)   # full frame, so training can re-detect
+    return path, "Sample saved."
 
 
 # --------------------------------------------------------------------------- #
@@ -79,7 +87,11 @@ def train():
         for img_path in sorted(student_dir.glob("*.jpg")):
             image = face_recognition.load_image_file(str(img_path))
             boxes = face_recognition.face_locations(image, model=config.FACE_DETECTION_MODEL)
-            for enc in face_recognition.face_encodings(image, boxes):
+            # num_jitters re-samples each face a few times (small random shifts /
+            # flips) and averages -> a more stable enrollment embedding.
+            for enc in face_recognition.face_encodings(
+                image, boxes, num_jitters=config.TRAIN_JITTERS
+            ):
                 encodings.append(enc)
                 ids.append(sid)
                 names.append(display_name)
@@ -116,32 +128,60 @@ class FaceRecognizer:
 
         box is (top, right, bottom, left) in FULL-resolution coordinates.
         student_id is None and name is 'Unknown' when nothing matched.
+
+        Detection runs on a downscaled copy (fast); the face embedding is then
+        computed on the FULL-resolution frame so it is directly comparable to the
+        full-resolution embeddings built during training.
         """
         if not self.encodings:
             return []
 
         scale = config.FRAME_DOWNSCALE
         small = cv2.resize(frame_bgr, (0, 0), fx=scale, fy=scale)
-        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        boxes_small = face_recognition.face_locations(
+            cv2.cvtColor(small, cv2.COLOR_BGR2RGB), model=config.FACE_DETECTION_MODEL
+        )
+        if not boxes_small:
+            return []
 
-        boxes = face_recognition.face_locations(rgb, model=config.FACE_DETECTION_MODEL)
-        encs = face_recognition.face_encodings(rgb, boxes)
-
-        known = np.array(self.encodings)
         inv = 1.0 / scale
+        h, w = frame_bgr.shape[:2]
+        boxes_full = [
+            (max(0, int(t * inv)), min(w, int(r * inv)),
+             min(h, int(b * inv)), max(0, int(l * inv)))
+            for (t, r, b, l) in boxes_small
+        ]
+        rgb_full = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        encs = face_recognition.face_encodings(rgb_full, boxes_full, num_jitters=1)
+
+        known = np.asarray(self.encodings)
+        ids = np.asarray(self.ids)
         results = []
-        for (top, right, bottom, left), enc in zip(boxes, encs):
+        for box, enc in zip(boxes_full, encs):
             distances = np.linalg.norm(known - enc, axis=1)
-            best = int(np.argmin(distances))
-            student_id, name, dist = None, "Unknown", None
-            if distances[best] <= config.FACE_MATCH_TOLERANCE:
-                student_id = self.ids[best]
-                name = self.names[best]
-                dist = float(distances[best])
+            student_id, name, dist = self._vote(distances, ids)
             results.append({
-                "box": (int(top * inv), int(right * inv), int(bottom * inv), int(left * inv)),
+                "box": box,
                 "student_id": student_id,
-                "name": name,
+                "name": name or "Unknown",
                 "distance": dist,
             })
         return results
+
+    def _vote(self, distances, ids):
+        """Among all enrolled samples within tolerance, pick the student with the
+        most matching samples (ties broken by smallest distance). This is far more
+        robust than trusting a single nearest neighbour."""
+        within = np.where(distances <= config.FACE_MATCH_TOLERANCE)[0]
+        if len(within) == 0:
+            return None, None, None
+        cand_ids = ids[within]
+        best = None  # (votes, -min_distance, student_id, min_distance)
+        for sid in set(cand_ids.tolist()):
+            idx = within[cand_ids == sid]
+            dmin = float(distances[idx].min())
+            score = (len(idx), -dmin)
+            if best is None or score > best[:2]:
+                best = (len(idx), -dmin, sid, dmin)
+        sid, dmin = best[2], best[3]
+        return sid, self.names[self.ids.index(sid)], dmin

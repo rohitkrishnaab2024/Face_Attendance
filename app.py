@@ -122,12 +122,9 @@ def api_capture(student_id):
     if frame is None:
         return jsonify(saved=False, message="Camera not ready yet, try again.",
                        count=face_engine.count_samples(student_id, student["name"])), 503
-    path = face_engine.save_face_sample(student_id, student["name"], frame)
+    path, message = face_engine.save_face_sample(student_id, student["name"], frame)
     count = face_engine.count_samples(student_id, student["name"])
-    if path is None:
-        return jsonify(saved=False, message="No face detected – face the camera.",
-                       count=count)
-    return jsonify(saved=True, message="Sample saved.", count=count)
+    return jsonify(saved=path is not None, message=message, count=count)
 
 
 @app.route("/api/train", methods=["POST"])

@@ -95,23 +95,46 @@ Open <http://127.0.0.1:5000>.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `FACE_MATCH_TOLERANCE` | `0.5` | Lower = stricter (fewer false matches, more misses). |
+| `FACE_MATCH_TOLERANCE` | `0.55` | Lower = stricter (fewer false matches, more misses). |
 | `FACE_DETECTION_MODEL` | `hog` | `cnn` is more accurate but needs a GPU. |
-| `SAMPLES_PER_STUDENT` | `20` | Photos captured per student. |
+| `SAMPLES_PER_STUDENT` | `25` | Photos captured per student. |
+| `TRAIN_JITTERS` | `4` | Re-samples per photo when training (higher = slower, stabler). |
 | `ATTENDANCE_COOLDOWN_SECONDS` | `300` | Re-mark suppression window per face. |
 | `LATE_AFTER` | `09:15:00` | First-seen after this time → status `Late`. |
 | `CAMERA_INDEX` | `0` | Change if the wrong camera opens. |
-| `FRAME_DOWNSCALE` | `0.25` | Smaller = faster detection, less accurate on far faces. |
+| `FRAME_DOWNSCALE` | `0.5` | Detection-only downscale. Smaller = faster, worse on far faces. |
+| `MIN_FACE_PIXELS` / `MIN_SHARPNESS` | `80` / `40` | Enrollment frames below these are rejected. |
 
 ---
 
 ## Accuracy notes
 
-- 15–25 varied photos per student (angles, expressions, lighting) is the single
-  biggest lever on accuracy.
-- `face_recognition` reports ~99.4% on the LFW benchmark; in a classroom with
-  decent lighting you should comfortably clear 90%.
-- Re-train (`Train model`) after adding or deleting students.
+If recognition is poor, work through this list in order:
+
+1. **Enrollment quality is 80% of the result.** Capture 20–30 photos per student
+   with the face filling a good part of the frame, in the lighting you'll
+   actually use, turning the head slightly between shots (left/right/up/down,
+   glasses on and off). Blurry / tiny / multi-face frames are now auto-rejected
+   during capture.
+2. **Re-train** (`Students → Train model`) after *any* change to students or
+   photos. Recognition uses the last trained model only.
+3. If people show as **Unknown**: raise `FACE_MATCH_TOLERANCE` to `0.58`–`0.6`.
+   If the **wrong** person matches: lower it to `0.5` and capture more photos.
+4. For a one-off, higher-accuracy enrollment set `FACE_DETECTION_MODEL=cnn`
+   (slow on CPU, ~1–3 s/photo) while training, then switch back to `hog` for
+   live use.
+
+How the engine already helps:
+
+- Detection runs on a half-size frame (fast); the **embedding is computed on the
+  full-resolution frame**, matching how training embeddings are built.
+- Training averages `TRAIN_JITTERS` (4) re-samples per photo for stabler
+  embeddings.
+- Recognition uses **multi-sample voting**: the student with the most enrolled
+  samples within tolerance wins, not a single nearest neighbour.
+
+`face_recognition` reports ~99.4% on the LFW benchmark; with good enrollment you
+should comfortably clear 90% in a classroom.
 
 ---
 

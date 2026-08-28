@@ -23,14 +23,21 @@ for _d in (DATASET_DIR, ENCODINGS_DIR, EXPORT_DIR):
 # "hog" = fast, CPU friendly.  "cnn" = more accurate but needs a GPU to be usable.
 FACE_DETECTION_MODEL = os.getenv("FACE_DETECTION_MODEL", "hog")
 # Max face-embedding distance to still count as a match. Lower = stricter.
-# 0.6 is the library default; 0.5 trades a few misses for far fewer false hits.
-FACE_MATCH_TOLERANCE = float(os.getenv("FACE_MATCH_TOLERANCE", "0.5"))
+# 0.6 is the library default; 0.55 is a good balance with multi-sample voting.
+FACE_MATCH_TOLERANCE = float(os.getenv("FACE_MATCH_TOLERANCE", "0.55"))
 # How many face images to capture per student during enrollment.
-SAMPLES_PER_STUDENT = int(os.getenv("SAMPLES_PER_STUDENT", "20"))
+SAMPLES_PER_STUDENT = int(os.getenv("SAMPLES_PER_STUDENT", "25"))
+# Reject enrollment frames whose face is smaller / blurrier than these.
+MIN_FACE_PIXELS = int(os.getenv("MIN_FACE_PIXELS", "80"))
+MIN_SHARPNESS = float(os.getenv("MIN_SHARPNESS", "40"))
+# Re-samples each enrollment face N times and averages (slower training, better
+# embeddings). 3-5 is a good range.
+TRAIN_JITTERS = int(os.getenv("TRAIN_JITTERS", "4"))
 # Run recognition on every Nth captured frame (keeps the video smooth).
 RECOGNITION_INTERVAL = int(os.getenv("RECOGNITION_INTERVAL", "5"))
-# Shrink frames before detection for speed (0.25 = quarter size).
-FRAME_DOWNSCALE = float(os.getenv("FRAME_DOWNSCALE", "0.25"))
+# Shrink frames before *detection* for speed (0.5 = half size). Encoding still
+# happens on the full-resolution frame.
+FRAME_DOWNSCALE = float(os.getenv("FRAME_DOWNSCALE", "0.5"))
 
 # ---- Attendance rules ------------------------------------------------------
 # After a student is marked, ignore that same face for this many seconds so one
