@@ -26,6 +26,7 @@ dataset/<id>_..   encodings/encodings.pkl   -> nearest known embedding
 | `camera.py`      | One shared webcam. Background thread grabs frames, runs recognition, marks attendance. |
 | `exporter.py`    | Build the CSV roster, email it via SMTP. |
 | `app.py`         | Flask routes + MJPEG video feed. |
+| `evaluate.py`    | Leave-one-out accuracy measurement over the enrolled dataset. |
 | `templates/`, `static/` | The teacher dashboard UI. |
 
 Data written at runtime (all git-ignored): `dataset/`, `encodings/`,
@@ -135,6 +136,25 @@ How the engine already helps:
 
 `face_recognition` reports ~99.4% on the LFW benchmark; with good enrollment you
 should comfortably clear 90% in a classroom.
+
+### Measuring your accuracy
+
+```powershell
+.\.venv\Scripts\python.exe evaluate.py
+```
+
+Runs **leave-one-out cross-validation** over your enrolled photos: each face is
+hidden in turn and recognised against the rest, using the same voting logic as
+the live system. Prints overall accuracy, per-student recall, a confusion list,
+and mean match distance. Needs ≥ 2 students with ~15+ photos each.
+
+Optional: drop photos of non-enrolled people into `eval_impostors/` and the
+script also reports the **false-accept rate** (how often a stranger is let
+through).
+
+This measures enrollment-quality images, so it is a best case — live webcam is
+usually a few points lower. Quote it honestly, e.g. *"~95% leave-one-out on an
+N-person enrolled set; ~90% in live webcam testing."*
 
 ---
 

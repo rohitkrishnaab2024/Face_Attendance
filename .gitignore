@@ -7,3 +7,4 @@ attendance.db
 dataset/
 encodings/
 exports/
+eval_impostors/
