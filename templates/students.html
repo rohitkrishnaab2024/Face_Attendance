@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Students · Smart Attendance{% endblock %}
+{% block content %}
+<h1>Students</h1>
+
+<div class="toolbar">
+  <a class="btn" href="{{ url_for('add_student') }}">+ Add student</a>
+  <button id="train-btn" class="btn btn-secondary">Train model</button>
+  <span id="train-status" class="muted"></span>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Roll</th><th>Name</th><th>Email</th><th>Face samples</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for s in students %}
+      <tr>
+        <td>{{ s["roll_no"] }}</td>
+        <td>{{ s["name"] }}</td>
+        <td>{{ s["email"] or "—" }}</td>
+        <td>
+          {{ s["samples"] }} / {{ target }}
+          {% if s["samples"] < target %}<span class="tag tag-late">need more</span>{% endif %}
+        </td>
+        <td class="actions">
+          <a class="link" href="{{ url_for('capture', student_id=s['id']) }}">Capture</a>
+          <form method="post" action="{{ url_for('delete_student', student_id=s['id']) }}"
+                onsubmit="return confirm('Delete {{ s['name'] }}?')">
+            <button class="link link-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">No students yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}
+{% block scripts %}
+<script>
+  document.getElementById('train-btn').addEventListener('click', async (e) => {
+    const status = document.getElementById('train-status');
+    e.target.disabled = true;
+    status.textContent = 'Training… this can take a minute.';
+    try {
+      const res = await fetch('{{ url_for("api_train") }}', { method: 'POST' });
+      const data = await res.json();
+      status.textContent = `Done: ${data.encodings} face encodings from ${data.students} students.`;
+    } catch (err) {
+      status.textContent = 'Training failed – check the server console.';
+    } finally {
+      e.target.disabled = false;
+    }
+  });
+</script>
+{% endblock %}

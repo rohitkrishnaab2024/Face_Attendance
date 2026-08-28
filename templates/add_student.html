@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Add student · Smart Attendance{% endblock %}
+{% block content %}
+<h1>Add student</h1>
+
+<form method="post" class="form">
+  <label>Roll number
+    <input type="text" name="roll_no" required autofocus>
+  </label>
+  <label>Full name
+    <input type="text" name="name" required>
+  </label>
+  <label>Email <span class="muted">(optional – for report delivery)</span>
+    <input type="email" name="email">
+  </label>
+  <button class="btn" type="submit">Create &amp; capture photos →</button>
+  <a class="link" href="{{ url_for('students') }}">Cancel</a>
+</form>
+{% endblock %}

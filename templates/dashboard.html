@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Smart Attendance{% endblock %}
+{% block content %}
+<h1>Dashboard <small>{{ today }}</small></h1>
+
+{% if not trained %}
+  <div class="flash flash-error">
+    The face model has not been trained yet. Add students, capture photos, then
+    click <strong>Train model</strong> on the Students page.
+  </div>
+{% endif %}
+
+<div class="cards">
+  <div class="card"><div class="num">{{ students|length }}</div><div class="lbl">Students</div></div>
+  <div class="card"><div class="num">{{ todays|length }}</div><div class="lbl">Present today</div></div>
+  <div class="card"><div class="num">{{ absent|length }}</div><div class="lbl">Absent today</div></div>
+</div>
+
+<div class="row">
+  <section class="panel">
+    <h2>Present today</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Roll</th><th>Name</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for r in todays %}
+          <tr>
+            <td>{{ r["time_in"] }}</td><td>{{ r["roll_no"] }}</td><td>{{ r["name"] }}</td>
+            <td><span class="tag tag-{{ r['status']|lower }}">{{ r["status"] }}</span></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">Nobody marked yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Not yet present</h2>
+    <ul class="pill-list">
+      {% for s in absent %}<li>{{ s["name"] }} <span class="muted">({{ s["roll_no"] }})</span></li>
+      {% else %}<li class="muted">Everyone is present. 🎉</li>{% endfor %}
+    </ul>
+  </section>
+</div>
+
+<p><a class="btn" href="{{ url_for('recognize_page') }}">Start taking attendance →</a></p>
+{% endblock %}

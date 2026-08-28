@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Records · Smart Attendance{% endblock %}
+{% block content %}
+<h1>Attendance records</h1>
+
+<form method="get" class="toolbar">
+  <label>Date <input type="date" name="date" value="{{ date }}" onchange="this.form.submit()"></label>
+  <a class="btn btn-secondary" href="{{ url_for('export_csv', date=date) }}">Download CSV</a>
+</form>
+
+<div class="row">
+  <section class="panel">
+    <h2>Present / Late ({{ rows|length }})</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Roll</th><th>Name</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+          <tr>
+            <td>{{ r["time_in"] }}</td>
+            <td>{{ r["roll_no"] }}</td>
+            <td>{{ r["name"] }}</td>
+            <td><span class="tag tag-{{ r['status']|lower }}">{{ r["status"] }}</span></td>
+            <td>
+              <form method="post" action="{{ url_for('attendance_delete', att_id=r['id']) }}">
+                <input type="hidden" name="date" value="{{ date }}">
+                <button class="link link-danger">remove</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">No records for this date.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Absent ({{ absent|length }})</h2>
+    <ul class="pill-list">
+      {% for s in absent %}<li>{{ s["name"] }} <span class="muted">({{ s["roll_no"] }})</span></li>
+      {% else %}<li class="muted">None</li>{% endfor %}
+    </ul>
+
+    <h2>Manual entry</h2>
+    <form method="post" action="{{ url_for('attendance_manual') }}" class="form">
+      <input type="hidden" name="date" value="{{ date }}">
+      <label>Student
+        <select name="student_id" required>
+          {% for s in all_students %}<option value="{{ s['id'] }}">{{ s['name'] }} ({{ s['roll_no'] }})</option>{% endfor %}
+        </select>
+      </label>
+      <label>Status
+        <select name="status"><option>Present</option><option>Late</option><option>Absent</option></select>
+      </label>
+      <button class="btn" type="submit">Save</button>
+    </form>
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Email this report</h2>
+  <form method="post" action="{{ url_for('email_report') }}" class="toolbar">
+    <input type="hidden" name="date" value="{{ date }}">
+    <input type="email" name="recipient" placeholder="teacher@example.com" required>
+    <button class="btn" type="submit">Send CSV by email</button>
+  </form>
+  <p class="muted">Requires SMTP settings in <code>.env</code> (see <code>.env.example</code>).</p>
+</section>
+{% endblock %}

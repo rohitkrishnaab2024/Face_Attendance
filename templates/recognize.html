@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Live Recognition · Smart Attendance{% endblock %}
+{% block content %}
+<h1>Live Recognition</h1>
+
+{% if not trained %}
+  <div class="flash flash-error">
+    No trained model found. Go to <a href="{{ url_for('students') }}">Students</a>,
+    capture photos and click <strong>Train model</strong> first.
+  </div>
+{% endif %}
+
+<div class="capture-grid">
+  <img class="video" src="{{ url_for('video_feed') }}" alt="webcam">
+  <div>
+    <p>
+      <button id="toggle" class="btn {{ 'btn-danger' if recognition_on else '' }}">
+        {{ 'Stop recognition' if recognition_on else 'Start recognition' }}
+      </button>
+    </p>
+    <p class="muted">
+      Recognised faces are marked present once per day. The same face is ignored
+      for a few minutes after marking so one person does not flood the log.
+    </p>
+    <h2>Recent</h2>
+    <ul id="feed" class="feed"><li class="muted">Nothing yet.</li></ul>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let on = {{ 'true' if recognition_on else 'false' }};
+  const btn = document.getElementById('toggle');
+  const feed = document.getElementById('feed');
+
+  btn.addEventListener('click', async () => {
+    const action = on ? 'stop' : 'start';
+    const res = await fetch(`/api/recognition/${action}`, { method: 'POST' });
+    const data = await res.json();
+    on = data.recognition_on;
+    btn.textContent = on ? 'Stop recognition' : 'Start recognition';
+    btn.classList.toggle('btn-danger', on);
+  });
+
+  async function poll() {
+    try {
+      const res = await fetch('{{ url_for("recent_marks") }}');
+      const { marks } = await res.json();
+      feed.innerHTML = marks.length
+        ? marks.map(m => `<li><strong>${m.name}</strong> — ${m.status} <span class="muted">${m.time}</span></li>`).join('')
+        : '<li class="muted">Nothing yet.</li>';
+    } catch (_) {}
+  }
+  setInterval(poll, 2000);
+  poll();
+</script>
+{% endblock %}

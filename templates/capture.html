@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Capture photos · {{ student["name"] }}{% endblock %}
+{% block content %}
+<h1>Capture photos — {{ student["name"] }} <small>({{ student["roll_no"] }})</small></h1>
+<p class="muted">
+  Face the camera and move your head a little between shots (slightly left, right,
+  up, down). Different angles and lighting make recognition far more reliable.
+</p>
+
+<div class="capture-grid">
+  <img class="video" src="{{ url_for('video_feed') }}" alt="webcam preview">
+  <div>
+    <div class="big-count"><span id="count">{{ samples }}</span> / {{ target }}</div>
+    <div class="progress"><div id="bar" class="bar"></div></div>
+    <p id="msg" class="muted">Ready.</p>
+    <button id="shot" class="btn">Capture sample</button>
+    <button id="auto" class="btn btn-secondary">Auto-capture ×10</button>
+    <p><a class="btn btn-secondary" href="{{ url_for('students') }}">Done</a></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const target = {{ target }};
+  const countEl = document.getElementById('count');
+  const barEl = document.getElementById('bar');
+  const msgEl = document.getElementById('msg');
+
+  function render(count) {
+    countEl.textContent = count;
+    barEl.style.width = Math.min(100, (count / target) * 100) + '%';
+  }
+  render({{ samples }});
+
+  async function shoot() {
+    const res = await fetch('{{ url_for("api_capture", student_id=student["id"]) }}', { method: 'POST' });
+    const data = await res.json();
+    msgEl.textContent = data.message;
+    msgEl.className = data.saved ? 'ok' : 'muted';
+    render(data.count);
+    return data.saved;
+  }
+
+  document.getElementById('shot').addEventListener('click', shoot);
+
+  document.getElementById('auto').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    for (let i = 0; i < 10; i++) {
+      await shoot();
+      await new Promise(r => setTimeout(r, 700));
+    }
+    e.target.disabled = false;
+  });
+</script>
+{% endblock %}
