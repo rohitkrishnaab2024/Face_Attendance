@@ -1,33 +1,33 @@
-"""Measure face-recognition accuracy on your enrolled dataset.
+"""Measure face-recognition accuracy on your enrolled dataset (InsightFace).
 
 Method: leave-one-out cross-validation. For every enrolled face image we hide
-that one image, then recognise it against all the *other* enrolled faces using
-the exact same voting logic the live system uses, and check whether the
+that one image, recognise it against all the *other* enrolled faces using the
+same cosine-similarity voting the live system uses, and check whether the
 predicted student is correct.
 
     python evaluate.py
 
 Optional impostor test: put photos of people who are NOT enrolled into a folder
-named  eval_impostors/  (any images). The script then also reports how often an
-impostor is wrongly accepted as a real student (false accept rate).
+named  eval_impostors/  . The script then also reports how often an impostor is
+wrongly accepted (false accept rate).
 
-Notes / honesty:
-- This tests enrollment-quality images, so it is a best case. Live webcam
-  numbers are usually a few points lower. Capture varied enrollment photos
-  (angles, lighting) to keep the two close.
-- Accuracy is only meaningful with >= 2 students and >= ~10 images each.
+Honesty notes:
+- This tests enrollment-quality images, so it is a best case. Live webcam is
+  usually a few points lower.
+- Only meaningful with >= 2 students and ~15+ images each.
 """
 import sys
 from collections import defaultdict
 
+import cv2
 import numpy as np
-import face_recognition
 
 import config
+import face_engine
 
 
-def _load_faces(root, labelled=True):
-    """Return list of (student_id, name, encoding). id/name are None if not labelled."""
+def _load(root, labelled=True):
+    """Return list of (student_id, name, embedding)."""
     items = []
     if not root.exists():
         return items
@@ -41,60 +41,63 @@ def _load_faces(root, labelled=True):
             except ValueError:
                 continue
             name = d.name.split("_", 1)[1].replace("_", " ")
-            images = sorted(d.glob("*.jpg")) + sorted(d.glob("*.png"))
         else:
             sid, name = None, None
-            images = sorted(d.glob("*.jpg")) + sorted(d.glob("*.png")) + sorted(d.glob("*.jpeg"))
-        for img in images:
-            image = face_recognition.load_image_file(str(img))
-            boxes = face_recognition.face_locations(image, model=config.FACE_DETECTION_MODEL)
-            for enc in face_recognition.face_encodings(image, boxes, num_jitters=1):
-                items.append((sid, name, enc))
+        for img_path in sorted(list(d.glob("*.jpg")) + list(d.glob("*.png")) + list(d.glob("*.jpeg"))):
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+            f = face_engine._largest(face_engine._app().get(img))
+            if f is None:
+                continue
+            items.append((sid, name, np.asarray(f.normed_embedding, dtype=np.float32)))
     return items
 
 
-def _vote(distances, ids, tol):
-    within = np.where(distances <= tol)[0]
-    if len(within) == 0:
-        return None
-    cand = ids[within]
-    best_id, best_score = None, None
-    for sid in set(cand.tolist()):
-        idx = within[cand == sid]
-        score = (len(idx), -float(distances[idx].min()))
-        if best_score is None or score > best_score:
+def _vote(sims, ids, thr):
+    """Mirror of FaceRecognizer._vote: rank students by the mean of their top-K
+    similarities, accept the best one if it clears the threshold."""
+    best_id, best_score = None, -1.0
+    for sid in set(ids.tolist()):
+        s = sims[ids == sid]
+        k = min(config.VOTE_TOP_K, len(s))
+        score = float(np.sort(s)[-k:].mean())
+        if score > best_score:
             best_score, best_id = score, sid
-    return best_id
+    return None if best_score < thr else best_id
 
 
 def main():
-    gallery = _load_faces(config.DATASET_DIR, labelled=True)
-    students = sorted({sid for sid, _, _ in gallery})
-    names = {sid: name for sid, name, _ in gallery}
+    print("Loading InsightFace model and embedding the dataset...\n")
+    gallery = _load(config.DATASET_DIR, labelled=True)
+    students = sorted({s for s, _, _ in gallery})
+    names = {s: n for s, n, _ in gallery}
 
     if len(students) < 2:
-        print("Need at least 2 enrolled students to measure accuracy "
-              f"(found {len(students)}). Enroll more people and re-run.")
+        print(f"Need at least 2 enrolled students (found {len(students)}).")
         sys.exit(1)
     if len(gallery) < 2 * len(students):
-        print(f"Warning: only {len(gallery)} face images for {len(students)} students "
-              "- the number will be noisy. Aim for ~20 images each.\n")
+        print(f"Warning: only {len(gallery)} images for {len(students)} students - "
+              "the number will be noisy.\n")
 
-    encs = np.array([e for _, _, e in gallery])
+    embs = np.vstack([e for _, _, e in gallery]).astype(np.float32)
     ids = np.array([s for s, _, _ in gallery])
-    tol = config.FACE_MATCH_TOLERANCE
+    thr = config.FACE_SIM_THRESHOLD
     n = len(gallery)
 
     correct = wrong = unknown = 0
-    per = defaultdict(lambda: [0, 0])          # sid -> [correct, total]
-    confusion = defaultdict(int)               # (true, pred) -> count
-    good_dists = []
+    per = defaultdict(lambda: [0, 0])
+    confusion = defaultdict(int)
+    good_sims = []
 
     for i in range(n):
         true_id = ids[i]
-        d = np.linalg.norm(encs - encs[i], axis=1)
-        d[i] = np.inf                          # leave this image out
-        pred = _vote(d, ids, tol)
+        # leave image i out of the gallery entirely
+        mask = np.ones(n, dtype=bool)
+        mask[i] = False
+        sims, gal_ids = embs[mask] @ embs[i], ids[mask]
+
+        pred = _vote(sims, gal_ids, thr)
         per[true_id][1] += 1
         if pred is None:
             unknown += 1
@@ -102,7 +105,7 @@ def main():
         elif pred == true_id:
             correct += 1
             per[true_id][0] += 1
-            good_dists.append(float(np.min(d[ids == true_id])))
+            good_sims.append(float(sims[gal_ids == true_id].max()))
             confusion[(true_id, pred)] += 1
         else:
             wrong += 1
@@ -110,19 +113,19 @@ def main():
 
     acc = correct / n
     print("=" * 52)
-    print("  FACE RECOGNITION ACCURACY  (leave-one-out)")
+    print("  FACE RECOGNITION ACCURACY  (leave-one-out, InsightFace)")
     print("=" * 52)
     print(f"  Students enrolled     : {len(students)}")
     print(f"  Face images tested    : {n}")
-    print(f"  Match tolerance       : {tol}")
+    print(f"  Similarity threshold  : {thr}")
     print("-" * 52)
     print(f"  Correct               : {correct:4d}   {correct/n:6.1%}")
     print(f"  Wrong person          : {wrong:4d}   {wrong/n:6.1%}")
     print(f"  Rejected as Unknown   : {unknown:4d}   {unknown/n:6.1%}")
     print("-" * 52)
     print(f"  ACCURACY              : {acc:6.1%}")
-    if good_dists:
-        print(f"  Mean distance (hits)  : {np.mean(good_dists):.3f}")
+    if good_sims:
+        print(f"  Mean similarity (hits): {np.mean(good_sims):.3f}")
     print("-" * 52)
     print("  Per-student recall:")
     for sid in students:
@@ -137,26 +140,24 @@ def main():
             pname = "Unknown" if p == "Unknown" else names.get(p, p)
             print(f"    {names[t][:18]:18s} -> {str(pname)[:18]:18s}  x{cnt}")
 
-    # ---- optional impostor test ----
-    impostors = _load_faces(config.BASE_DIR / "eval_impostors", labelled=False)
+    impostors = _load(config.BASE_DIR / "eval_impostors", labelled=False)
     if impostors:
-        falsely_accepted = 0
+        fa = 0
         for _, _, e in impostors:
-            d = np.linalg.norm(encs - e, axis=1)
-            if _vote(d, ids, tol) is not None:
-                falsely_accepted += 1
+            if _vote(embs @ e, ids, thr) is not None:
+                fa += 1
         m = len(impostors)
         print("=" * 52)
         print(f"  Impostor faces tested : {m}")
-        print(f"  Falsely accepted      : {falsely_accepted}   {falsely_accepted/m:6.1%}")
-        print(f"  Correctly rejected    : {m - falsely_accepted}   {1 - falsely_accepted/m:6.1%}")
+        print(f"  Falsely accepted      : {fa}   {fa/m:6.1%}")
+        print(f"  Correctly rejected    : {m - fa}   {1 - fa/m:6.1%}")
 
     print("=" * 52)
     if acc >= 0.90:
         print(f"  >= 90% target met ({acc:.1%}).")
     else:
-        print(f"  Below 90% ({acc:.1%}). Try: more/varied photos per student,")
-        print("  better lighting, or adjust FACE_MATCH_TOLERANCE in .env.")
+        print(f"  Below 90% ({acc:.1%}). Try more/varied photos per student,")
+        print("  better lighting, or tune FACE_SIM_THRESHOLD in .env.")
     print("=" * 52)
 
 

@@ -140,8 +140,8 @@ class Camera:
             matched = r["student_id"] is not None
             color = (0, 180, 0) if matched else (0, 0, 220)
             label = r["name"]
-            if r["distance"] is not None:
-                label += f"  {r['distance']:.2f}"
+            if r.get("similarity") is not None:
+                label += f"  {int(r['similarity'] * 100)}%"
             cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
             cv2.rectangle(frame, (left, bottom - 24), (right, bottom), color, cv2.FILLED)
             cv2.putText(frame, label, (left + 5, bottom - 7),
