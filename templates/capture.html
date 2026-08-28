@@ -2,55 +2,119 @@
 {% block title %}Capture photos · {{ student["name"] }}{% endblock %}
 {% block content %}
 <h1>Capture photos — {{ student["name"] }} <small>({{ student["roll_no"] }})</small></h1>
-<p class="muted">
-  Face the camera and move your head a little between shots (slightly left, right,
-  up, down). Different angles and lighting make recognition far more reliable.
-</p>
 
 <div class="capture-grid">
   <img class="video" src="{{ url_for('video_feed') }}" alt="webcam preview">
   <div>
     <div class="big-count"><span id="count">{{ samples }}</span> / {{ target }}</div>
     <div class="progress"><div id="bar" class="bar"></div></div>
-    <p id="msg" class="muted">Ready.</p>
-    <button id="shot" class="btn">Capture sample</button>
-    <button id="auto" class="btn btn-secondary">Auto-capture ×10</button>
-    <p><a class="btn btn-secondary" href="{{ url_for('students') }}">Done</a></p>
+
+    <div id="pose" class="pose">Ready when you are.</div>
+    <p id="msg" class="muted">&nbsp;</p>
+
+    <button id="auto" class="btn">Auto-capture all {{ target }}</button>
+    <button id="stop" class="btn btn-danger" disabled>Stop</button>
+    <button id="shot" class="btn btn-secondary">Single shot</button>
+
+    <p style="margin-top:16px"><a class="btn btn-secondary" href="{{ url_for('students') }}">Done / back to students</a></p>
   </div>
+</div>
+
+<div class="panel" style="margin-top:20px">
+  <h2>How to get a good enrollment set</h2>
+  <ul>
+    <li>Sit about an arm's length from the camera so your face fills a good part of the frame.</li>
+    <li>Use the lighting you'll actually use for attendance — avoid a bright window behind you.</li>
+    <li>Click <strong>Auto-capture all {{ target }}</strong> and follow the on-screen pose prompts —
+      it stops automatically at {{ target }} samples.</li>
+    <li>Blurry, too-small, or multi-face frames are skipped automatically (you'll see why under the counter).</li>
+    <li>When it finishes, go to <strong>Students → Train model</strong>.</li>
+  </ul>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  const target = {{ target }};
-  const countEl = document.getElementById('count');
-  const barEl = document.getElementById('bar');
-  const msgEl = document.getElementById('msg');
+  const target  = {{ target }};
+  const captureURL = "{{ url_for('api_capture', student_id=student['id']) }}";
+  let count = {{ samples }};
+  let running = false;
 
-  function render(count) {
+  const countEl = document.getElementById('count');
+  const barEl   = document.getElementById('bar');
+  const msgEl   = document.getElementById('msg');
+  const poseEl  = document.getElementById('pose');
+  const autoBtn = document.getElementById('auto');
+  const stopBtn = document.getElementById('stop');
+  const shotBtn = document.getElementById('shot');
+
+  const poses = [
+    "Look straight at the camera",
+    "Turn your head slightly to the LEFT",
+    "Turn your head slightly to the RIGHT",
+    "Tilt your head slightly UP",
+    "Tilt your head slightly DOWN",
+    "Face forward and smile",
+    "Lean in a little closer",
+    "If you wear glasses, take them off now",
+  ];
+
+  function render() {
+    const done = count >= target;
     countEl.textContent = count;
     barEl.style.width = Math.min(100, (count / target) * 100) + '%';
+    autoBtn.disabled = done || running;
+    shotBtn.disabled = done || running;
+    stopBtn.disabled = !running;
+    if (done) {
+      poseEl.textContent = "✓ Enrollment complete";
+      msgEl.textContent = "Now open Students → Train model.";
+      msgEl.className = "ok";
+    }
   }
-  render({{ samples }});
 
   async function shoot() {
-    const res = await fetch('{{ url_for("api_capture", student_id=student["id"]) }}', { method: 'POST' });
-    const data = await res.json();
-    msgEl.textContent = data.message;
-    msgEl.className = data.saved ? 'ok' : 'muted';
-    render(data.count);
-    return data.saved;
+    try {
+      const res = await fetch(captureURL, { method: 'POST' });
+      const data = await res.json();
+      count = data.count;
+      if (!data.saved) { msgEl.textContent = data.message; msgEl.className = 'muted'; }
+      else { msgEl.textContent = ''; }
+      render();
+      return data.saved;
+    } catch (e) {
+      msgEl.textContent = 'Capture failed — is the server running?';
+      return false;
+    }
   }
 
-  document.getElementById('shot').addEventListener('click', shoot);
+  async function auto() {
+    running = true;
+    render();
+    let poseIdx = 0, savedSincePose = 0;
+    poseEl.textContent = poses[0];
+    const perPose = Math.max(2, Math.ceil(target / poses.length));
 
-  document.getElementById('auto').addEventListener('click', async (e) => {
-    e.target.disabled = true;
-    for (let i = 0; i < 10; i++) {
-      await shoot();
-      await new Promise(r => setTimeout(r, 700));
+    while (running && count < target) {
+      const ok = await shoot();
+      if (ok) {
+        savedSincePose++;
+        if (savedSincePose >= perPose && poseIdx < poses.length - 1) {
+          poseIdx++; savedSincePose = 0;
+          poseEl.textContent = "Next: " + poses[poseIdx];
+          await new Promise(r => setTimeout(r, 1400));   // time to change pose
+          poseEl.textContent = poses[poseIdx];
+        }
+      }
+      await new Promise(r => setTimeout(r, 550));
     }
-    e.target.disabled = false;
-  });
+    running = false;
+    render();
+  }
+
+  autoBtn.addEventListener('click', auto);
+  stopBtn.addEventListener('click', () => { running = false; });
+  shotBtn.addEventListener('click', shoot);
+  render();
 </script>
 {% endblock %}

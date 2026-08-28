@@ -116,15 +116,22 @@ def api_capture(student_id):
     student = database.get_student(student_id)
     if not student:
         return jsonify(error="student not found"), 404
+    target = config.SAMPLES_PER_STUDENT
+    count = face_engine.count_samples(student_id, student["name"])
+    if count >= target:
+        return jsonify(saved=False, done=True, count=count,
+                       message=f"Enough samples ({count}). Go to Students -> Train model.")
+
     cam = Camera()
     cam.start()
     frame = cam.snapshot()
     if frame is None:
         return jsonify(saved=False, message="Camera not ready yet, try again.",
-                       count=face_engine.count_samples(student_id, student["name"])), 503
+                       count=count), 503
     path, message = face_engine.save_face_sample(student_id, student["name"], frame)
     count = face_engine.count_samples(student_id, student["name"])
-    return jsonify(saved=path is not None, message=message, count=count)
+    return jsonify(saved=path is not None, done=count >= target,
+                   message=message, count=count)
 
 
 @app.route("/api/train", methods=["POST"])
