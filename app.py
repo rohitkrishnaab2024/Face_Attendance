@@ -2,6 +2,8 @@
 
 Run with:  python app.py     (then open http://127.0.0.1:5000)
 """
+import atexit
+import signal
 from datetime import date as date_cls
 
 from flask import (Flask, Response, flash, jsonify, redirect, render_template,
@@ -16,6 +18,19 @@ from camera import Camera
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 database.init_db()
+
+
+def _shutdown_camera(*_):
+    Camera().stop()
+
+
+# Release the webcam when the process exits (Ctrl+C, kill, normal exit).
+atexit.register(_shutdown_camera)
+for _sig in (signal.SIGINT, signal.SIGTERM):
+    try:
+        signal.signal(_sig, lambda s, f: (_shutdown_camera(), exit(0)))
+    except (ValueError, OSError):        # not in main thread / unsupported
+        pass
 
 
 def _today():
@@ -155,6 +170,13 @@ def recognition_toggle(action):
 @app.route("/api/recent_marks")
 def recent_marks():
     return jsonify(marks=Camera().recent_marks)
+
+
+@app.route("/api/camera/release", methods=["POST"])
+def camera_release():
+    """Turn recognition off and let the webcam be released now."""
+    Camera().recognition_on = False
+    return jsonify(ok=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -54,5 +54,10 @@
   }
   setInterval(poll, 2000);
   poll();
+
+  // Leaving the page: stop recognition so the webcam can switch off.
+  window.addEventListener('pagehide', () => {
+    navigator.sendBeacon('/api/camera/release');
+  });
 </script>
 {% endblock %}

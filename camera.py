@@ -1,9 +1,11 @@
 """Single shared webcam.
 
 Only ONE cv2.VideoCapture can own the webcam at a time, so this is a process-wide
-singleton. A background thread continuously grabs frames; Flask routes read the
-latest frame for MJPEG streaming and, when recognition is enabled, the thread
-also runs face recognition and writes attendance rows.
+singleton. A background thread grabs frames ONLY while the camera is actually
+needed - i.e. while a browser is watching the MJPEG feed or recognition is on.
+As soon as nobody needs it (all tabs closed, recognition stopped) the thread
+releases the device after a short grace period, so the webcam light goes off.
+Call Camera().stop() on process shutdown for a clean release.
 """
 import threading
 import time
@@ -13,6 +15,9 @@ import cv2
 import config
 import database
 from face_engine import FaceRecognizer
+
+# How long to keep the device open after the last viewer leaves.
+IDLE_RELEASE_SECONDS = 3
 
 
 class Camera:
@@ -34,49 +39,82 @@ class Camera:
 
         self.recognizer = FaceRecognizer()
         self.recognition_on = False
-        self.last_results = []          # boxes from the most recent recognition pass
-        self.recent_marks = []          # small feed shown on the Live page
-        self._frame_no = 0
-        self._last_seen = {}            # student_id -> unix time last marked
+        self.last_results = []
+        self.recent_marks = []
 
-    # ---- lifecycle --------------------------------------------------------- #
+        self._frame_no = 0
+        self._last_seen = {}          # student_id -> unix time last marked
+        self._viewers = 0             # active MJPEG streams
+        self._last_need = 0.0         # last time the camera was needed
+
+    # ---- lifecycle ------------------------------------------------------- #
     def start(self):
+        """Ensure the background thread is running (it manages the device)."""
         with self._lock:
             if self.running:
                 return
-            # CAP_DSHOW avoids the slow MSMF backend on Windows
-            self.cap = cv2.VideoCapture(config.CAMERA_INDEX, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(config.CAMERA_INDEX)
             self.running = True
             self.thread = threading.Thread(target=self._loop, daemon=True)
             self.thread.start()
 
     def stop(self):
-        with self._lock:
-            self.running = False
-        if self.thread:
-            self.thread.join(timeout=2)
-        if self.cap:
-            self.cap.release()
-        self.cap, self.frame, self.thread = None, None, None
+        """Stop the thread and release the webcam. Safe to call multiple times."""
+        self.running = False
+        self.recognition_on = False
+        t = self.thread
+        if t and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=2)
+        self._release_device()
+        self.thread = None
 
-    # ---- capture loop ---------------------------------------------------- #
+    def _open_device(self):
+        # CAP_DSHOW avoids the slow MSMF backend on Windows
+        cap = cv2.VideoCapture(config.CAMERA_INDEX, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(config.CAMERA_INDEX)
+        return cap if cap.isOpened() else None
+
+    def _release_device(self):
+        if self.cap is not None:
+            self.cap.release()
+        self.cap = None
+        self.frame = None
+        self.last_results = []
+
+    def _needed(self):
+        return self._viewers > 0 or self.recognition_on
+
+    # ---- capture loop -------------------------------------------------- #
     def _loop(self):
         while self.running:
-            ok, frame = self.cap.read()
-            if not ok:
-                time.sleep(0.1)
-                continue
-            self._frame_no += 1
-            if self.recognition_on and self._frame_no % config.RECOGNITION_INTERVAL == 0:
-                try:
-                    self.last_results = self.recognizer.recognize(frame)
-                    self._register(self.last_results)
-                except Exception as exc:                       # keep the stream alive
-                    print("[camera] recognition error:", exc)
-            self.frame = frame
-            time.sleep(0.01)
+            if self._needed():
+                self._last_need = time.time()
+                if self.cap is None:
+                    self.cap = self._open_device()
+                    if self.cap is None:
+                        time.sleep(0.5)
+                        continue
+                ok, frame = self.cap.read()
+                if not ok:
+                    time.sleep(0.1)
+                    continue
+                self._frame_no += 1
+                if self.recognition_on and self._frame_no % config.RECOGNITION_INTERVAL == 0:
+                    try:
+                        self.last_results = self.recognizer.recognize(frame)
+                        self._register(self.last_results)
+                    except Exception as exc:              # keep the stream alive
+                        print("[camera] recognition error:", exc)
+                self.frame = frame
+                time.sleep(0.01)
+            else:
+                # nobody needs the camera -> release it after the grace period
+                if self.cap is not None and time.time() - self._last_need > IDLE_RELEASE_SECONDS:
+                    self._release_device()
+                time.sleep(0.2)
+
+        self._release_device()
 
     def _register(self, results):
         now = time.time()
@@ -95,7 +133,7 @@ class Camera:
             })
             del self.recent_marks[12:]
 
-    # ---- frame output -------------------------------------------------- #
+    # ---- frame output ------------------------------------------------ #
     def _annotate(self, frame):
         for r in self.last_results:
             top, right, bottom, left = r["box"]
@@ -111,19 +149,39 @@ class Camera:
         return frame
 
     def stream(self):
-        """Yield an MJPEG multipart stream forever."""
-        while True:
-            if self.frame is None:
-                time.sleep(0.05)
-                continue
-            frame = self.frame.copy()
-            if self.recognition_on:
-                frame = self._annotate(frame)
-            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ok:
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-                       + buf.tobytes() + b"\r\n")
-            time.sleep(0.03)
+        """Yield an MJPEG multipart stream. Registers as a viewer for its lifetime."""
+        self.start()
+        self._viewers += 1
+        try:
+            idle = 0
+            while self.running:
+                if self.frame is None:
+                    time.sleep(0.05)
+                    idle += 1
+                    if idle > 100:            # ~5s with no frame -> give up
+                        break
+                    continue
+                idle = 0
+                frame = self.frame.copy()
+                if self.recognition_on:
+                    frame = self._annotate(frame)
+                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                           + buf.tobytes() + b"\r\n")
+                time.sleep(0.03)
+        finally:
+            self._viewers = max(0, self._viewers - 1)
 
     def snapshot(self):
-        return None if self.frame is None else self.frame.copy()
+        """Return the latest frame, briefly opening the camera if needed."""
+        self.start()
+        self._viewers += 1                    # count as a viewer while we wait
+        try:
+            for _ in range(60):               # wait up to ~3s for a frame
+                if self.frame is not None:
+                    return self.frame.copy()
+                time.sleep(0.05)
+            return None
+        finally:
+            self._viewers = max(0, self._viewers - 1)
