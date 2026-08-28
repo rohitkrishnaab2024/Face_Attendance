@@ -54,9 +54,7 @@
     "Turn your head slightly to the RIGHT",
     "Tilt your head slightly UP",
     "Tilt your head slightly DOWN",
-    "Face forward and smile",
-    "Lean in a little closer",
-    "If you wear glasses, take them off now",
+    "Smile - and if you wear glasses, take them off",
   ];
 
   function render() {
@@ -102,11 +100,11 @@
         if (savedSincePose >= perPose && poseIdx < poses.length - 1) {
           poseIdx++; savedSincePose = 0;
           poseEl.textContent = "Next: " + poses[poseIdx];
-          await new Promise(r => setTimeout(r, 1400));   // time to change pose
+          await new Promise(r => setTimeout(r, 1000));   // time to change pose
           poseEl.textContent = poses[poseIdx];
         }
       }
-      await new Promise(r => setTimeout(r, 550));
+      await new Promise(r => setTimeout(r, 150));   // server inference already costs ~450ms
     }
     running = false;
     render();

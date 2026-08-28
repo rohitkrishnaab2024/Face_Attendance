@@ -82,7 +82,7 @@ Open <http://127.0.0.1:5000>.
 ### Typical flow
 
 1. **Students → Add student** — enter roll number + name (+ email for reports).
-2. On the capture page, click **Auto-capture all 25** and follow the on-screen
+2. On the capture page, click **Auto-capture all 12** and follow the on-screen
    pose prompts. It stops automatically at the target.
 3. **Students → Train model** — builds `encodings/encodings.pkl`. (Slower the
    first time — the model has to load.)
@@ -101,7 +101,7 @@ Open <http://127.0.0.1:5000>.
 | `VOTE_TOP_K` | `3` | Student is scored by the mean of their K most similar samples. |
 | `INSIGHTFACE_MODEL` | `buffalo_l` | `buffalo_s` is smaller/faster, slightly less accurate. |
 | `FACE_DET_SIZE` | `640` | Detector input size. `320` is faster, shorter range. |
-| `SAMPLES_PER_STUDENT` | `25` | Photos captured per student (auto-capture stops here). |
+| `SAMPLES_PER_STUDENT` | `12` | Photos captured per student (auto-capture stops here). |
 | `ATTENDANCE_COOLDOWN_SECONDS` | `300` | Re-mark suppression window per face. |
 | `LATE_AFTER` | `09:15:00` | First-seen after this time → status `Late`. |
 | `CAMERA_INDEX` | `0` | Change if the wrong camera opens. |
@@ -113,7 +113,7 @@ Open <http://127.0.0.1:5000>.
 
 If recognition is poor, work through this list in order:
 
-1. **Enrollment quality matters most.** Capture 20–30 photos per student with the
+1. **Enrollment VARIETY matters, not count.** ~12 photos per student is plenty (see below), but they must differ - capture with the
    face filling a good part of the frame, in the lighting you'll actually use,
    turning the head slightly between shots (left/right/up/down, glasses on and
    off). Blurry / tiny / multi-face / low-confidence frames are auto-rejected
@@ -151,6 +151,25 @@ match (0.317) means the classes are **fully separable** — the 0.35 threshold s
 in empty space between them. Live webcam recognition scored 0.73–0.80 for the
 enrolled subject against 0.07–0.20 for the other students.
 
+### How many photos per student? (measured)
+
+Gallery = N enrolled photos, tested on the **remaining** photos of the same
+people (3 students, 25 photos each):
+
+| Photos/student | Capture time | Accuracy |
+|---|---|---|
+| 3  | ~4s  | 98.5% |
+| 5  | ~7s  | 98.3–100% |
+| **8**  | **~11s** | **98.0–100%** |
+| 12 | ~15s | 97.4–100% |
+| 25 | ~35s | 100% |
+
+ArcFace embeddings are discriminative enough that **8–12 varied photos match the
+accuracy of 25**; the extra shots are near-duplicates that add nothing. What the
+sweep does show is that *variety* beats *count* — 5 photos spread across
+different poses beat 15 near-identical ones. Hence the default of 12 with pose
+prompts, rather than 25 of the same expression.
+
 ### Measuring your accuracy
 
 ```powershell
@@ -160,7 +179,7 @@ enrolled subject against 0.07–0.20 for the other students.
 Runs **leave-one-out cross-validation** over your enrolled photos: each face is
 hidden in turn and recognised against the rest, using the same voting logic as
 the live system. Prints overall accuracy, per-student recall, a confusion list,
-and mean match similarity. Needs ≥ 2 students with ~15+ photos each.
+and mean match similarity. Needs ≥ 2 students with ~10+ photos each.
 
 Optional: drop photos of non-enrolled people into `eval_impostors/` and the
 script also reports the **false-accept rate** (how often a stranger is let

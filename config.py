@@ -31,7 +31,7 @@ FACE_SIM_THRESHOLD = float(os.getenv("FACE_SIM_THRESHOLD", "0.35"))
 # A student is scored by the mean of their K most similar enrolled samples.
 VOTE_TOP_K = int(os.getenv("VOTE_TOP_K", "3"))
 # How many face images to capture per student during enrollment.
-SAMPLES_PER_STUDENT = int(os.getenv("SAMPLES_PER_STUDENT", "25"))
+SAMPLES_PER_STUDENT = int(os.getenv("SAMPLES_PER_STUDENT", "12"))
 # Reject enrollment frames whose face is too small / blurry / weakly detected.
 MIN_FACE_PIXELS = int(os.getenv("MIN_FACE_PIXELS", "80"))
 MIN_SHARPNESS = float(os.getenv("MIN_SHARPNESS", "40"))
