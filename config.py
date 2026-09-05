@@ -36,8 +36,11 @@ SAMPLES_PER_STUDENT = int(os.getenv("SAMPLES_PER_STUDENT", "12"))
 MIN_FACE_PIXELS = int(os.getenv("MIN_FACE_PIXELS", "80"))
 MIN_SHARPNESS = float(os.getenv("MIN_SHARPNESS", "40"))
 MIN_DET_SCORE = float(os.getenv("MIN_DET_SCORE", "0.6"))
-# Run recognition on every Nth captured frame (keeps the video smooth).
-RECOGNITION_INTERVAL = int(os.getenv("RECOGNITION_INTERVAL", "5"))
+# Recognition runs on its own thread; this is the minimum pause between passes.
+# 0 = run back-to-back (max responsiveness, one CPU core busy).
+RECOGNITION_MIN_INTERVAL = float(os.getenv("RECOGNITION_MIN_INTERVAL", "0.05"))
+# JPEG quality of the MJPEG stream. Lower = less CPU and bandwidth.
+STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "75"))
 
 # ---- Attendance rules ------------------------------------------------------
 # After a student is marked, ignore that same face for this many seconds so one

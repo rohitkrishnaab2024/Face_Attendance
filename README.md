@@ -29,7 +29,7 @@ Euclidean distance. The `buffalo_l` model (~326 MB) downloads automatically to
 | `config.py`      | All tunables (similarity threshold, camera index, SMTP, paths). Reads `.env`. |
 | `database.py`    | SQLite schema + queries. `UNIQUE(student_id, date)` = one mark per day. |
 | `face_engine.py` | Save enrollment photos, `train()` embeddings, `FaceRecognizer.recognize()`. |
-| `camera.py`      | One shared webcam. Background thread grabs frames, runs recognition, marks attendance. |
+| `camera.py`      | One shared webcam. Capture thread grabs frames; a separate thread runs recognition and marks attendance. |
 | `exporter.py`    | Build the CSV roster, email it via SMTP. |
 | `app.py`         | Flask routes + MJPEG video feed. |
 | `evaluate.py`    | Leave-one-out accuracy measurement over the enrolled dataset. |
@@ -100,11 +100,13 @@ Open <http://127.0.0.1:5000>.
 | `FACE_SIM_THRESHOLD` | `0.35` | Min cosine similarity to accept a match. Higher = stricter. |
 | `VOTE_TOP_K` | `3` | Student is scored by the mean of their K most similar samples. |
 | `INSIGHTFACE_MODEL` | `buffalo_l` | `buffalo_s` is smaller/faster, slightly less accurate. |
-| `FACE_DET_SIZE` | `640` | Detector input size. `320` is faster, shorter range. |
 | `SAMPLES_PER_STUDENT` | `12` | Photos captured per student (auto-capture stops here). |
 | `ATTENDANCE_COOLDOWN_SECONDS` | `300` | Re-mark suppression window per face. |
 | `LATE_AFTER` | `09:15:00` | First-seen after this time → status `Late`. |
 | `CAMERA_INDEX` | `0` | Change if the wrong camera opens. |
+| `RECOGNITION_MIN_INTERVAL` | `0.05` | Pause between recognition passes on the worker thread. |
+| `STREAM_JPEG_QUALITY` | `75` | MJPEG quality. Lower = less CPU and bandwidth. |
+| `FACE_DET_SIZE` | `640` | Detector input size. Drop to `320` to cut inference ~425ms -> ~276ms. |
 | `MIN_FACE_PIXELS` / `MIN_SHARPNESS` / `MIN_DET_SCORE` | `80` / `40` / `0.6` | Enrollment frames below these are rejected. |
 
 ---
@@ -169,6 +171,25 @@ accuracy of 25**; the extra shots are near-duplicates that add nothing. What the
 sweep does show is that *variety* beats *count* — 5 photos spread across
 different poses beat 15 near-identical ones. Hence the default of 12 with pose
 prompts, rather than 25 of the same expression.
+
+### Live-video performance
+
+Recognition runs on its **own thread**, separate from frame capture. Previously
+it ran inline in the capture loop, so every inference pass (~400 ms on CPU) froze
+the video. Measured on this machine with recognition on:
+
+| | fps | worst frame gap | stalls >200 ms (per 8 s) |
+|---|---|---|---|
+| Inline (old) | 6.9 | 730 ms | 11 |
+| Threaded (new) | 14.9 | 117 ms | 0 |
+
+The trade-off is that the drawn boxes lag the live image by up to one inference
+(~400 ms), which is not noticeable at normal movement speed. The stream also
+skips re-encoding a frame it has already sent.
+
+If it is still slow on your machine, set `FACE_DET_SIZE=320` in `.env` -
+inference drops from ~425 ms to ~276 ms with no measured accuracy loss at
+webcam range.
 
 ### Measuring your accuracy
 

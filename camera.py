@@ -1,11 +1,22 @@
 """Single shared webcam.
 
 Only ONE cv2.VideoCapture can own the webcam at a time, so this is a process-wide
-singleton. A background thread grabs frames ONLY while the camera is actually
-needed - i.e. while a browser is watching the MJPEG feed or recognition is on.
-As soon as nobody needs it (all tabs closed, recognition stopped) the thread
-releases the device after a short grace period, so the webcam light goes off.
-Call Camera().stop() on process shutdown for a clean release.
+singleton. Two daemon threads run:
+
+  capture thread     - grabs frames as fast as the webcam allows and publishes
+                       the latest one. Nothing slow ever runs here, so the MJPEG
+                       stream stays smooth.
+  recognition thread - picks up the most recent frame and runs InsightFace on it
+                       (~300-450 ms per pass on CPU), then publishes the boxes.
+
+Keeping recognition OFF the capture thread is what stops the video stuttering:
+previously every inference pass froze frame-grabbing for the whole ~450 ms.
+The drawn boxes therefore lag the live image by up to one inference, which is
+invisible at normal movement speed.
+
+The camera is opened only while it is needed - a browser is watching the feed or
+recognition is on - and released a few seconds after the last viewer leaves, so
+the webcam light goes off. Call Camera().stop() on process shutdown.
 """
 import threading
 import time
@@ -35,37 +46,41 @@ class Camera:
         self.cap = None
         self.frame = None
         self.running = False
-        self.thread = None
+        self.threads = []
 
         self.recognizer = FaceRecognizer()
         self.recognition_on = False
         self.last_results = []
         self.recent_marks = []
 
-        self._frame_no = 0
         self._last_seen = {}          # student_id -> unix time last marked
         self._viewers = 0             # active MJPEG streams
         self._last_need = 0.0         # last time the camera was needed
+        self._infer_ms = 0.0          # most recent inference cost (ms)
 
     # ---- lifecycle ------------------------------------------------------- #
     def start(self):
-        """Ensure the background thread is running (it manages the device)."""
+        """Ensure the worker threads are running (they manage the device)."""
         with self._lock:
             if self.running:
                 return
             self.running = True
-            self.thread = threading.Thread(target=self._loop, daemon=True)
-            self.thread.start()
+            self.threads = [
+                threading.Thread(target=self._capture_loop, daemon=True),
+                threading.Thread(target=self._recognition_loop, daemon=True),
+            ]
+            for t in self.threads:
+                t.start()
 
     def stop(self):
-        """Stop the thread and release the webcam. Safe to call multiple times."""
+        """Stop the threads and release the webcam. Safe to call repeatedly."""
         self.running = False
         self.recognition_on = False
-        t = self.thread
-        if t and t.is_alive() and t is not threading.current_thread():
-            t.join(timeout=2)
+        for t in self.threads:
+            if t.is_alive() and t is not threading.current_thread():
+                t.join(timeout=2)
         self._release_device()
-        self.thread = None
+        self.threads = []
 
     def _open_device(self):
         # CAP_DSHOW avoids the slow MSMF backend on Windows
@@ -73,7 +88,11 @@ class Camera:
         if not cap.isOpened():
             cap.release()
             cap = cv2.VideoCapture(config.CAMERA_INDEX)
-        return cap if cap.isOpened() else None
+        if not cap.isOpened():
+            return None
+        # a 1-frame buffer keeps the stream close to real time
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
 
     def _release_device(self):
         if self.cap is not None:
@@ -85,36 +104,56 @@ class Camera:
     def _needed(self):
         return self._viewers > 0 or self.recognition_on
 
-    # ---- capture loop -------------------------------------------------- #
-    def _loop(self):
+    # ---- capture thread (must stay fast) --------------------------------- #
+    def _capture_loop(self):
         while self.running:
-            if self._needed():
-                self._last_need = time.time()
-                if self.cap is None:
-                    self.cap = self._open_device()
-                    if self.cap is None:
-                        time.sleep(0.5)
-                        continue
-                ok, frame = self.cap.read()
-                if not ok:
-                    time.sleep(0.1)
-                    continue
-                self._frame_no += 1
-                if self.recognition_on and self._frame_no % config.RECOGNITION_INTERVAL == 0:
-                    try:
-                        self.last_results = self.recognizer.recognize(frame)
-                        self._register(self.last_results)
-                    except Exception as exc:              # keep the stream alive
-                        print("[camera] recognition error:", exc)
-                self.frame = frame
-                time.sleep(0.01)
-            else:
-                # nobody needs the camera -> release it after the grace period
+            if not self._needed():
                 if self.cap is not None and time.time() - self._last_need > IDLE_RELEASE_SECONDS:
                     self._release_device()
                 time.sleep(0.2)
+                continue
+
+            self._last_need = time.time()
+            if self.cap is None:
+                self.cap = self._open_device()
+                if self.cap is None:
+                    time.sleep(0.5)
+                    continue
+
+            ok, frame = self.cap.read()
+            if not ok:
+                time.sleep(0.05)
+                continue
+            self.frame = frame
 
         self._release_device()
+
+    # ---- recognition thread (slow work lives here) ----------------------- #
+    def _recognition_loop(self):
+        last_id = None
+        while self.running:
+            if not self.recognition_on:
+                self.last_results = []
+                time.sleep(0.1)
+                continue
+
+            frame = self.frame
+            if frame is None or id(frame) == last_id:
+                time.sleep(0.02)              # nothing new to look at yet
+                continue
+            last_id = id(frame)
+
+            try:
+                t0 = time.perf_counter()
+                results = self.recognizer.recognize(frame)
+                self._infer_ms = (time.perf_counter() - t0) * 1000
+                self.last_results = results
+                self._register(results)
+            except Exception as exc:          # never kill the thread
+                print("[camera] recognition error:", exc)
+                time.sleep(0.2)
+
+            time.sleep(config.RECOGNITION_MIN_INTERVAL)
 
     def _register(self, results):
         now = time.time()
@@ -133,15 +172,16 @@ class Camera:
             })
             del self.recent_marks[12:]
 
-    # ---- frame output ------------------------------------------------ #
+    # ---- frame output ---------------------------------------------------- #
     def _annotate(self, frame):
         for r in self.last_results:
             top, right, bottom, left = r["box"]
             matched = r["student_id"] is not None
             color = (0, 180, 0) if matched else (0, 0, 220)
             label = r["name"]
-            if r.get("similarity") is not None:
-                label += f"  {int(r['similarity'] * 100)}%"
+            sim = r.get("similarity")
+            if sim is not None:
+                label += "  {}%".format(int(sim * 100))
             cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
             cv2.rectangle(frame, (left, bottom - 24), (right, bottom), color, cv2.FILLED)
             cv2.putText(frame, label, (left + 5, bottom - 7),
@@ -149,36 +189,42 @@ class Camera:
         return frame
 
     def stream(self):
-        """Yield an MJPEG multipart stream. Registers as a viewer for its lifetime."""
+        """Yield an MJPEG multipart stream. Counts as a viewer for its lifetime."""
         self.start()
         self._viewers += 1
         try:
             idle = 0
+            last_id = None
             while self.running:
-                if self.frame is None:
+                frame = self.frame
+                if frame is None:
                     time.sleep(0.05)
                     idle += 1
-                    if idle > 100:            # ~5s with no frame -> give up
+                    if idle > 100:                # ~5s with no frame
                         break
                     continue
-                idle = 0
-                frame = self.frame.copy()
-                if self.recognition_on:
-                    frame = self._annotate(frame)
-                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if id(frame) == last_id:          # don't re-encode the same frame
+                    time.sleep(0.005)
+                    continue
+                last_id, idle = id(frame), 0
+
+                draw = self.recognition_on and self.last_results
+                out = self._annotate(frame.copy()) if draw else frame
+                ok, buf = cv2.imencode(
+                    ".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, config.STREAM_JPEG_QUALITY]
+                )
                 if ok:
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
                            + buf.tobytes() + b"\r\n")
-                time.sleep(0.03)
         finally:
             self._viewers = max(0, self._viewers - 1)
 
     def snapshot(self):
         """Return the latest frame, briefly opening the camera if needed."""
         self.start()
-        self._viewers += 1                    # count as a viewer while we wait
+        self._viewers += 1
         try:
-            for _ in range(60):               # wait up to ~3s for a frame
+            for _ in range(60):                   # wait up to ~3s for a frame
                 if self.frame is not None:
                     return self.frame.copy()
                 time.sleep(0.05)
